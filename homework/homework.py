@@ -61,3 +61,123 @@
 # {'type': 'metrics', 'dataset': 'train', 'r2': 0.8, 'mse': 0.7, 'mad': 0.9}
 # {'type': 'metrics', 'dataset': 'test', 'r2': 0.7, 'mse': 0.6, 'mad': 0.8}
 #
+import pandas as pd
+import os
+import gzip
+import pickle as pk
+import json
+from sklearn.linear_model import LinearRegression
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import (
+    r2_score,
+    mean_squared_error,
+    mean_absolute_error,
+)
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
+from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import GridSearchCV
+
+def lectura_limpieza(ruta):
+    data=pd.read_csv(ruta, index_col=False, compression="zip")
+    data["Age"]=2021-data["Year"]
+    data.drop(columns=["Year","Car_Name"], inplace=True)
+    return data
+
+def division(data):
+    return data.drop(columns=["Present_Price"]),data["Present_Price"]
+
+def crear_pipeline():
+    variables_categoricas=["Fuel_Type","Selling_type","Transmission","Owner"]
+    variables_numericas=["Selling_Price","Driven_kms","Age"]
+    preprocessing= ColumnTransformer(
+        transformers=[
+            (
+                "One",
+                OneHotEncoder(handle_unknown="ignore"),
+                variables_categoricas
+            ),
+            (
+                "escalado",
+                MinMaxScaler(),
+                variables_numericas
+            )
+        ],
+        remainder="passthrough",
+    )
+    pipeline=Pipeline(
+        steps=[
+            ("preprocesado",preprocessing),
+            ("SelectKBest", SelectKBest(score_func=f_regression)),
+            ("modelo", LinearRegression())
+        ]
+    )
+    return pipeline
+
+def optimizador(x_train,y_train):
+    parametros = {
+        "SelectKBest__k": list(range(1, 20)),
+  
+    }
+
+    modelo = GridSearchCV(
+        estimator=crear_pipeline(),
+        param_grid=parametros,
+        cv=10,
+        scoring="neg_mean_squared_error",
+        n_jobs=-1,
+        verbose=2,
+    )
+
+    modelo.fit(x_train, y_train)
+
+    return modelo
+
+def guardar_modelo(modelo):
+    os.makedirs("files/models", exist_ok=True)
+    with gzip.open("files/models/model.pkl.gz","wb") as archivo:
+        pk.dump(modelo,archivo)
+
+def calcular_metricas(nombre, reales, predichos):
+    return {
+        "type": "metrics",
+        "dataset": nombre,
+        "r2": round(r2_score(reales, predichos), 4),
+        "mse": round(mean_squared_error(reales, predichos), 4),
+        "mad": round(mean_absolute_error(reales, predichos), 4),
+    }
+    
+def guardar_metricas(resultados):
+    os.makedirs("files/output", exist_ok=True)
+
+    with open("files/output/metrics.json","w",) as archivo:
+        for resultado in resultados:
+            archivo.write(json.dumps(resultado))
+            archivo.write("\n")
+            
+def main():
+    train=lectura_limpieza("files/input/train_data.csv.zip")
+    test=lectura_limpieza("files/input/test_data.csv.zip")
+    x_train, y_train=division(train)
+    x_test, y_test=division(test)
+    modelo=optimizador(x_train,y_train)
+    guardar_modelo(modelo)
+    pred_train=modelo.predict(x_train)
+    pred_test=modelo.predict(x_test)
+
+    resultados = [
+        calcular_metricas(
+            "train",
+            y_train,
+            pred_train,
+        ),
+        calcular_metricas(
+            "test",
+            y_test,
+            pred_test,
+        ),
+    ]
+
+    guardar_metricas(resultados)
+if __name__=="__main__":
+    main()
